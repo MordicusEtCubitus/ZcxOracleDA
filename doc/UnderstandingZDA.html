@@ -1,0 +1,129 @@
+<html>
+    <head>
+        <title>Understanding Zope Database Adaptaters</title>
+    </head>
+    <body>
+        <h1>
+            Understanding Zope Database Adaptaters
+        </h1>
+        <em>This document tries to explain how Zope Database adaptaters are working.</em>
+        <p>Recently I have worked on two Zope database adaptaters: One for PostgreSQL (ZPsycoPGDA) and the other for Oracle (ZcxOracleDA).</p>
+        <p>In the first case I had to try to find <a href="http://psycopg.lighthouseapp.com/projects/62710/tickets/142">an issue regarding transaction reset</a> and in the second case I have implemented bind variables management with ZSQL methods to provide better performances (near x10).</p>
+    
+        <p>These actions made me understood that my knowledge for Zope Database Adaptaters was not so clear that I though.
+            So you will find below the description of my new understanding of these classes. <br/>Hope it could help.</p>
+    
+        <h2>Adding a ZGadfly Database Connection</h2>
+        <p>By default Zope offers a Gadfly Database connector. Adding it from the ZMI will help understanding Database connectors.</p>
+        <p>When adding this object, url is<em> /ZGadflyDA/manage_addZGadflyConnectionForm</em>.</p>
+        
+        <p><i>manage_addZGadflyConnectionForm</i> is defined in <i>&lt;zope folder&gt;/lib/python/Products/ZGadflyDA/__init__.py</i> and it returns <i>ZGadflyDA.DA.addConnectionForm</i> itself returning <i>ZGadflyDA/dtml/connectionAdd</i></p>
+        <p>Finally, once submitted <i>connectionAdd.dtml</i> is calling <i>ZGadflyDA.DA.manage_addZGadFlyConnection</i> itself creating a <i>ZGadfly.DA.Connection()</i> object.</p>
+        <p>So, here we are: <i>ZGadflyDA.DA.Connection</i> is a subclass of <i>ZGadflyDA.DABase.Connection</i>, itself a subclass of Zope <b>Shared.DC.ZRDB.Connection.Connection</b>.</p>
+        
+        <h2>Understanding <b>Shared.DC.ZRDB.Connection.Connection</b></h2>
+        <p>Among the different methods implemented by Zope ZRDB.Connection.Connection class, here are the some helping understanding how it works:</p>
+        <dl>
+            <dt>manage_open_connection</dt>
+            <dd>This method is by default the one called when cliking on "Open Connection" button in the status tab of the connection manager in the ZMI.<br/>
+                It calls the <i>connect</i> method.
+            </dd>
+            <dt>manage_close_connection</dt>
+            <dd>This method is by default the one called when cliking on "Close Connection" button in the status tab of the connection manager in the ZMI.<br/>
+                It calls <b>self._v_database_connection.close()</b>
+            </dd>
+            <dt>connect</dt>
+            <dd>This method first calls <i>manage_close_connection</i> then creates an DB object from <i>factory</i> method and set <i>self._v_database_connection</i> to this DB object.</dd>
+            <dt>factory</dt>
+            <dd>This method creates the real database connection object. It is not defined and has to be implemented by your subclass managing your database connector.</dd>
+            <dt>__call__</dt>
+            <dd>This allow to directly call the object as a method. The default behaviour is to return the <i>self._v_database_connection</i> object.</dd>
+            
+        </dl>
+        
+        <p>We have learned three important clues here:</p>
+        <ol>
+            <li>Shared.DC.ZRDB.Connection.Connection manages database connections</li>
+            <li>The real database connection object is a volatile object, so it will be dropped when Zope will be shutdown or no more use it.</li>
+            <li>Your subclass of Shared.DC.ZRDB.Connection.Connection has the responsibility to create the self._v_database_connection object.</li>
+        </ol>
+        
+        <p>Another important point to underline here, is that the Connection() objet is a persitent object and will be created one time by instance and thread.</p>
+        <p>So, if you have a ZEO cluster of 3 instances having 2 threads by instance, you will get 6 Shared.DC.ZRDB.Connection.Connection objects at a time.</p>
+        <p>There is no need or implementation of pool of connections. Each connection is used by the thread which owns it.</p>
+        <p>As a thread only serves one HTTP request at a time, it will always use the same connection object for each HTTP request.</p>
+        <p>If the thread still IDLE a too long time, the volatile object of the real connection attribute, <b>self._v_database_connection</b>, will be dropped. When called again a new <b>self._v_database_connection</b> will be created.</p>
+        
+        <h2>Having a first look at ZPyscoPGDA and ZcxOracleDA</h2>
+        <p>Now that we have a simple and quite clear understanding of Zope Database Connections, we are going to investigate this a bit more looking at how ZPsycoPGDA and ZcxOracleDA are implementing their sublass of <b>Shared.DC.ZRDB.Connection.Connection</b></p>
+        <p>Quickly, both products implements a subclass of Zope Connection class in a file named DA.py</p>
+        <p>They, in particular, define the <i>factory()</i> method which creates a DB object.</p>
+        <p>This DB object is also a subclass of Zope <i>Shared.DC.ZRDB.TM</i></p>
+        <p>Before having a look at Shared.DC.ZRDB.TM, I suggest to have a look at ZSQLMethod implementation</p>
+
+        <h2>ZSQL Methods</h2>
+        <p>Zope database adaptaters are accessed through Zope SQL Methods (ZSQL).</p>
+        <p>They are defined in <i>&lt;zope folder&gt;/lib/python/Products/ZSQLMethods/SQL.py</i>. They are a sublcass of <em>Shared.DC.ZRDB.DA.DA</em></p>
+        <p><em>Shared.DC.ZRDB.DA.DA</em> class provides the functionalities below:</p>
+        <ul>
+            <li>It is callable like a function</li>
+            <li>It owns a <i>connection_id</i> attribute referencing the <i>Shared.DC.ZRDB.Connection.Connection</i> object to use to execute the SQL statement.</li>
+            <li>It also owns an optional <i>connection_hook</i> attribute which is a reference to a function returning the id of <i>Shared.DC.ZRDB.Connection.Connection</i> object to use to execute the SQL statement.<br/>
+                <i>connection_id</i> attribute is required, but if <i>connection_hook</i> is provided, its result will provide the final connection identifier value.</p> 
+            </li>
+            <li>It defines a <i>_cached_result()</i> method used to cache SQL results from previous queries using the same parameters in order to speedup search process.</li>
+            <li>It implements <i>__call__</i>.<br/>
+                This method does the following actions:
+                <ul>
+                    <li>Get the connection identifier of the connection object to use</li>
+                    <li>Evaluate parameters and SQL command to execute, by replacing dtml variables with their values</li>
+                    <li>Check if query result is not already available from cache</li>
+                    <li>If not, call the <i>Shared.DC.ZRDB.Connection.Connection</i> object, which returns its <i>_v_database_connection</i> attribute as seen before and execute the SQL statement using <b>_v_database_connection.query</b> method</li>
+                </ul>
+            </li>
+        </ul>
+            
+        <h2>Understanding Transaction Managers</h2>
+        <p>Finally, as we can see, the whole work of Zope Database Adapaters is executed by its <i>Shared.DC.ZRDB.Connection.Connection.<b>_v_database_connection</b></i> object.</p>
+        <p>This object is the real database connection object, and implemented as a Transaction manager from Zope <i>Shared.DC.ZRDB.TM</i> class.</p>
+        
+        <p>Quickly, it defines a set of function to start and stop transactions: </p>
+        <dl>
+            <dt>_begin</dt>
+            <dd>This method is called to start a transaction. By default it does nothing, but should acts as BEGIN in a SQL statement.
+            </dd>
+            <dt>_finish</dt>
+            <dd>This method is called to end a transaction. By default it calls <b>self.db.commit()</b> method.<br/>
+                It will be called at the end of the HTTP request.
+            </dd>
+            <dt>_abort</dt>
+            <dd>This method is called to cancel a transaction. By default it calls <b>self.db.rollback()</b></dd>
+            <dt>self.db</dt>
+            <dd>This attribute is not defined is the TM class and has to be created by the subclass. <b>This is the database connector.</b></dd>
+            <dt>_register</dt>
+            <dd>This method has to be called each time a SQL statement is issued. It will use transaction manager that will register it and allow automatic rollback/commit at the end of the HTTP Request</dd>
+        </dl>
+        
+        <h2>Going further into ZPyscoPGDA and ZcxOracleDA</h2>
+        <p>Each database adaptater first defines the <i>self.db</i> attribute in its <i>__init__</i> method.</p>
+        <p>This attribute is the Python database library object use to connect to the SQL backend. <br/>Respectively, a <b>psycopg2</b> or a <b>cx_Oracle</b> object.</p>
+        <p>They also implements the <i>close</i> and <i>query</i> methods. The last one first calls the <i>_register</i> method to be included in Zope transaction management.</p>
+        <p>The <i>query</i> method obtain a cursor using the Python backend database library to execute the SQL statement and returns the resulting data if any.</p>
+        
+        <h2>To put it in a nutshell</h2>
+        <p>So, what we have learned above is that:</p>
+        <ul>
+            <li>Zope database adapaters are <i>Shared.DC.ZRDB.Connection.Connection</i> objects.<br/>
+            They use a volatile connection attribute to the database <i>self._v_database_connection</i><br/>
+            One <i>self._v_database_connection</i> is created by each instance/zeo client thread.</li>
+            <li>Each <i>_v_database_connection</i> object is a <i>Shared.DC.ZRDB.TM</i> object.<br/>
+                It must implement <i>close()</i> and <i>query()</i> methods.<br/>
+                It must implement a <i>self.db</i> attribute having <i>commit()</i> and <i>rollback()</i> methods.<br/>
+                The <i>query()</i> method must call <i>_register()</i> method to be used by Zope transaction mechanism.
+            </li>
+            <li>The <i>Shared.DC.ZRDB.TM.db</i> attribute is the real database connection object used by Python to talk with database SQL Backend</li>
+            
+        </ul>
+    </body>
+    
+</html>

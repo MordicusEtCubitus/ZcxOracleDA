@@ -1,0 +1,26 @@
+Zope cxOracle Database Adaptor
+
+Revision 2013-01-08
+    - Add threaded=True in connection setup option to prevent form 
+      "Invalid Handle" error
+      See :
+        https://code.djangoproject.com/ticket/13351
+        http://kdl.nobugware.com/post/2010/08/09/using-oracle-django/
+
+    - Correct issue on BEGIN/END statements if query contains CRLF
+      See db.py > db > query function.
+      
+    - Add bind variables support by implementing .ZORA methods, like .ZSQL
+      IE: Rename your .zsql to .zora and ou will benefit from bind variables syntax
+
+  0.6
+
+	Fixes a bug where, if an Oracle connection goes down, the DA continues to
+    attempt to talk to the stale connection, leaving your website hanging.
+
+	Informs the management interface when the stale connection is restarted.
+
+	  0.5
+
+    This is the first release of the Zope cxOracle Database Adaptor
+	
